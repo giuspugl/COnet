@@ -1,0 +1,19 @@
+#!/bin/bash
+
+#SBATCH -C gpu 
+#SBATCH -A mp107d_g
+#SBATCH --time=06:00:00
+#SBATCH --nodes 1 
+#SBATCH --gpus 1
+#SBATCH --qos shared  
+#SBATCH --job-name=COnet
+#SBATCH --output=log_gpu_%j.log
+
+module load tensorflow/2.9.0
+EPOCHS=680
+BATCH_SIZE=128 
+WDIR="/pscratch/sd/g/giuspugl/workstation/CO_network/extending_CO/"
+
+date
+ python train_cyclegan.py --epochs ${EPOCHS}  --batch_size ${BATCH_SIZE} --workdir  ${WDIR} --pretrained --longitudinal-split --augment-trainingset --rescale-outputs > cyclegan_log_$SLURM_JOB_ID
+date
