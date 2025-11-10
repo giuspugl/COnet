@@ -2,7 +2,7 @@ import datetime
 import tensorflow as tf
 
 import tensorflow_datasets as tfds
-from tensorflow_examples.models.pix2pix import pix2pix as p2p 
+#from tensorflow_examples.models.pix2pix import pix2pix as p2p 
 from  pix2pix import unet_generator, discriminator 
 import os
 import time
@@ -19,7 +19,7 @@ class CycleGAN(object):
     """
 
     def __init__(self, epochs, enable_function, pretrained =False, 
-                workdir ='./', sigma= 0.1):
+                workdir ='./', sigma= 0.3):
         self.checkpoint_path = f"{workdir}/checkpoints/"
         self.workdir = workdir 
         self.epochs = epochs
@@ -190,6 +190,9 @@ class CycleGAN(object):
         self.ypred  = self.generator_g(xtest+np.random.normal ( scale=self.sigma_noise ,  size= xtest.shape))
         self.xpred  = self. generator_f(ytest+np.random.normal ( scale=self.sigma_noise, size= ytest.shape))
 
+    def predict_COmap (self, xtest, fname   ): 
+        self.ypred  = self.generator_g(xtest+np.random.normal ( scale=self.sigma_noise ,  size= xtest.shape))
+        np.savez(fname ,  ypred= self.ypred   )
         
     def save_predictions(self):
         np.savez(f'{self.workdir}/CO_cyclegan_predictions.npz',  ypred= self.ypred , xpred=self.xpred )

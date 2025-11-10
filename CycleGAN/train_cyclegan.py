@@ -45,7 +45,7 @@ def main(args):
 
     
     cgan  = CycleGAN( epochs= EPOCHS, enable_function=True ,  
-                 pretrained =args.pretrained , workdir=workdir, sigma= .2) 
+                 pretrained =args.pretrained , workdir=workdir, sigma= args.sigmanoise ) 
 
     
 
@@ -73,6 +73,8 @@ if __name__=="__main__":
     parser.add_argument("--verbose" , action='store_true', default=False  )
     parser.add_argument("--augment-trainingset" , action='store_true', default=False  )
     parser.add_argument("--rescale-outputs" , action='store_true', default=False  )
+    parser.add_argument("--sigmanoise" , type=float  )
+    
 
     args = parser.parse_args()
 
