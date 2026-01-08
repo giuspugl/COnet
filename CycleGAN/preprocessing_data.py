@@ -102,7 +102,13 @@ def main(args):
     torch.save(tensor_data_A, f"{workdir}/fileA.pt")
     torch.save(tensor_data_B, f"{workdir}/fileB.pt")
 
+    tensor_data_A = torch.from_numpy(xtest).float().permute(0,3,1,2) # .float() is usually safer for NN training
+    tensor_data_B = torch.from_numpy(ytest).float().permute(0,3,1,2) # .float() is usually safer for NN training
+    print(tensor_data_A.shape, tensor_data_B.shape)
 
+    # 3. Save to .pt file
+    torch.save(tensor_data_A, f"{workdir}/fileA_test.pt")
+    torch.save(tensor_data_B, f"{workdir}/fileB_test.pt")
 
 if __name__=="__main__":
     parser = argparse.ArgumentParser( description="  " )
@@ -118,4 +124,9 @@ if __name__=="__main__":
 
 
     main( args)
-    
+
+
+
+"""
+--workdir /pscratch/sd/g/giuspugl/workstation/CO_network/extending_CO/ --pretrained --longitudinal-split --augment-trainingset --rescale-outputs
+""" 

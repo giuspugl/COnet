@@ -19,18 +19,23 @@ class CheckpointManager:
         os.makedirs(save_dir, exist_ok=True)
         # Initialize CSV logging
         self.log_file = os.path.join(save_dir, "training_log.csv")
-        with open(self.log_file, "w", newline="") as f:
+        with open(self.log_file, "a", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["Epoch", "Loss_G", "Loss_D", "PSD_Error", "Hist_Error"])
+            writer.writerow(["Epoch", "Loss_G",  "Loss_D",     
+                     "Loss_G_GAN",
+                    "Loss_G_Cycle",    
+                    "Loss_G_ID",       
+                    "PSD_Error", "Hist_Error"])
 
     def save_checkpoint(self, state, epoch):
         filepath = os.path.join(self.save_dir, f"checkpoint_epoch_{epoch}.pth")
         torch.save(state, filepath)
         print(f"-> Checkpoint saved: {filepath}")
-    def log_metrics(self, epoch, loss_g, loss_d, psd_error, hist_error):
+        
+    def log_metrics(self, epoch, loss_g, loss_d, loss_g_gan, loss_g_cycle, loss_g_id, psd_error, hist_error):
         with open(self.log_file, "a", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow([epoch, loss_g, loss_d, psd_error, hist_error])
+            writer.writerow([epoch, loss_g, loss_d,loss_g_gan, loss_g_cycle, loss_g_id, psd_error, hist_error])
             
 
 
@@ -266,6 +271,7 @@ def train(input_path_A=None, input_path_B=None, epochs=100,save_dir="./",
         
         # 3. Set Start Epoch
         start_epoch = checkpoint['epoch'] + 1
+        epochs+= start_epoch
         print(f"Resuming training from Epoch {start_epoch}")
     else:
         print("No checkpoint found or provided. Starting from scratch.")
@@ -275,8 +281,12 @@ def train(input_path_A=None, input_path_B=None, epochs=100,save_dir="./",
     # ==========================================
 
     print(f"Starting training. Logs will be saved to {save_dir}/")
+
     for epoch in range(start_epoch, epochs + 1):
         loss_G_total = 0.0
+        loss_G_GAN = 0.0
+        loss_G_cyc = 0.0
+        loss_G_id = 0.0
         loss_D_total = 0.0
         epoch_start_time = time.time()  # Start Epoch Timer
         # Timing Accumulators
@@ -331,6 +341,9 @@ def train(input_path_A=None, input_path_B=None, epochs=100,save_dir="./",
             loss_G.backward()
             optimizer_G.step()
             loss_G_total += loss_G.item()
+            loss_G_GAN += loss_GAN.item()
+            loss_G_cyc += loss_cycle.item()
+            loss_G_id += loss_identity.item()
 
             # -----------------------
             #  Train Discriminator A
@@ -365,17 +378,26 @@ def train(input_path_A=None, input_path_B=None, epochs=100,save_dir="./",
             end = time.time()
         # 1. Calculate Average Losses
         avg_loss_G = loss_G_total / len(dataloader)
+        avg_loss_G_GAN = loss_G_GAN / len(dataloader)
+        avg_loss_G_cyc = loss_G_cyc / len(dataloader)
+        avg_loss_G_id = loss_G_id / len(dataloader)
         avg_loss_D = loss_D_total / len(dataloader)
         epoch_duration = time.time() - epoch_start_time
     
         psd_err, hist_err = calculate_physics_metrics(G_AB, dataloader, device)
-    
+        print(f"[Epoch {epoch}/{epochs}] Loss G cyc: {avg_loss_G_cyc:.4f}|Loss G id: {avg_loss_G_id:.4f}  | Loss D: {avg_loss_D:.4f} |  PSD Error: {psd_err:.4f} | Hist Error: {hist_err:.4f}")
         # 3. Log to CSV
-        manager.log_metrics(epoch, avg_loss_G, avg_loss_D, psd_err, hist_err)
+
+        manager.log_metrics(epoch, 
+                            avg_loss_G, 
+                            avg_loss_D, 
+                            avg_loss_G_GAN, 
+                            avg_loss_G_cyc, 
+                            avg_loss_G_id, 
+                            psd_err, hist_err)
     
         # 4. Save Checkpoint (Weights + Optimizer state)
-        if epochs%10==0: 
-            print('in') 
+        if epoch%10==0 or epoch ==epochs  : 
             checkpoint_state = {
                 'epoch': epoch,
                 'G_AB': G_AB.state_dict(),
@@ -402,16 +424,28 @@ def train(input_path_A=None, input_path_B=None, epochs=100,save_dir="./",
             print(f"  > Avg Batch Proc Time: {avg_batch_time:.4f} sec")
             print(f"--------------------------------------------------")
         
-        print(f"[Epoch {epoch}/{epochs}] Loss G: {avg_loss_G:.4f} | Loss D: {avg_loss_D:.4f} |  PSD Error: {psd_err:.4f} | Hist Error: {hist_err:.4f}")
+        
 
         
 
 if __name__ == "__main__":
     # Replace these with your actual .pt file paths
     # If files don't exist, the script will generate random noise to demonstrate functionality.
-    workdir ="/pscratch/sd/g/giuspugl/workstation/CO_network/extending_CO/" 
+    workdir ="/pscratch/sd/g/giuspugl/workstation/CO_network/extending_CO" 
+    import glob 
+    import re
+    chks = (glob . glob (f"{workdir}/new_experiment/checkpoint_epoch_*" )) 
+    # Regex to extract the epoch number
+    def extract_epoch(filename):
+        match = re.search(r"checkpoint_epoch_(\d+).pth", filename)
+        return int(match.group(1)) if match else -1
+
+    # Sort based on epoch number (Descending)
+    latest_chkp  = max(chks, key=extract_epoch)
+
+    
     train(f"{workdir}/fileA.pt", f"{workdir}/fileB.pt", 
-          epochs=100, save_dir = f"{workdir}/new_experiment"  )
+          epochs=96, save_dir = f"{workdir}/new_experiment" ,resume_path=latest_chkp ) 
 
     #train(  epochs=1, save_dir = f"{workdir}/new_experiment",
     #      resume_path=f"{workdir}/new_experiment/checkpoint_epoch_1.pth")
