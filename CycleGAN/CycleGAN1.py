@@ -9,6 +9,7 @@ import random
 import os
 import csv
 import numpy as np
+from torch.cuda.amp import  GradScaler
 # ==========================================
 # 0. UTILITIES (Inception Score & Checkpoints)
 # ==========================================
@@ -141,9 +142,11 @@ class Discriminator(nn.Module):
 # ==========================================
 
 class MemoryCycleGANDataset(Dataset):
-    def __init__(self, tensor_A, tensor_B):
+    def __init__(self, tensor_A, tensor_B,  mode ):
         self.data_A = self._fix_shape(tensor_A)
         self.data_B = self._fix_shape(tensor_B)
+        self.mode=mode 
+        
         self.len_A = len(self.data_A)
         self.len_B = len(self.data_B)
         self.max_len = max(self.len_A, self.len_B)
@@ -154,11 +157,17 @@ class MemoryCycleGANDataset(Dataset):
             return tensor.permute(3, 0, 1, 2)
         return tensor
 
-    def __getitem__(self, index):
+    def __getitem__(self, index ):
         # A is deterministic, B is random (Unpaired training)
-        item_A = self.data_A[index % self.len_A]
-        idx_B = random.randint(0, self.len_B - 1)
-        item_B = self.data_B[idx_B]
+        if self.mode =='unpaired':
+            item_A = self.data_A[index % self.len_A]
+            idx_B = random.randint(0, self.len_B - 1)
+            item_B = self.data_B[idx_B]
+        else: 
+        #  paired training 
+            item_A = self.data_A[index % self.len_A]
+            idx_B = random.randint(0, self.len_B - 1)
+            item_B = self.data_B[index % self.len_B]
         return {'A': item_A, 'B': item_B}
 
     def __len__(self):
@@ -191,7 +200,7 @@ class ReplayBuffer:
         return torch.cat(to_return)
 
 
-def get_memory_loader(input_path_A , input_path_B , batch_size =4):
+def get_memory_loader(input_path_A , input_path_B ,mode,  batch_size =4):
     """
     Loads large single-file tensors and returns a DataLoader.
     Assumes files are .pt 
@@ -207,8 +216,8 @@ def get_memory_loader(input_path_A , input_path_B , batch_size =4):
         tensor_A = torch.load(input_path_A, map_location='cpu')
         tensor_B = torch.load(input_path_B, map_location='cpu')
 
-    dataset = MemoryCycleGANDataset(tensor_A, tensor_B)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=0,pin_memory=True # Speed up transfer to GPU
+    dataset = MemoryCycleGANDataset(tensor_A, tensor_B,mode )
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True # Speed up transfer to GPU
     )
     
     return loader
@@ -217,7 +226,7 @@ def get_memory_loader(input_path_A , input_path_B , batch_size =4):
 # 4. MAIN TRAINING SCRIPT
 # ==========================================
 
-def train(input_path_A=None, input_path_B=None, epochs=100,save_dir="./", 
+def train(input_path_A=None, input_path_B=None, epochs=100,mode='unpaired', save_dir="./", 
           batch_size=4, resume_path=None ):
     
     # 1. Setup Device
@@ -225,8 +234,10 @@ def train(input_path_A=None, input_path_B=None, epochs=100,save_dir="./",
     print(f"Training on: {device}")
     # Manager for saving stuff
     manager = CheckpointManager(save_dir)
+    scaler = GradScaler()
     # 2. Load Data
-    dataloader = get_memory_loader(input_path_A, input_path_B, batch_size) 
+
+    dataloader = get_memory_loader(input_path_A, input_path_B, mode, batch_size) 
     # 3. Initialize Models
     input_shape = (2, 128, 128)
     G_AB = Generator(input_shape).to(device)
@@ -316,56 +327,69 @@ def train(input_path_A=None, input_path_B=None, epochs=100,save_dir="./",
             #  Train Generators
             # ------------------
             optimizer_G.zero_grad()
+            with torch.amp.autocast(device_type='cuda'): 
+                # Identity loss
+                loss_id_A = criterion_identity(G_BA(real_A), real_A)
+                loss_id_B = criterion_identity(G_AB(real_B), real_B)
+                loss_identity = (loss_id_A + loss_id_B) / 2
+    
+                # GAN loss
+                fake_B = G_AB(real_A)
+                loss_GAN_AB = criterion_GAN(D_B(fake_B), valid)
+                fake_A = G_BA(real_B)
+                loss_GAN_BA = criterion_GAN(D_A(fake_A), valid)
+                loss_GAN = (loss_GAN_AB + loss_GAN_BA) / 2
+    
+                # Cycle loss
+                rec_A = G_BA(fake_B)
+                loss_cycle_A = criterion_cycle(rec_A, real_A)
+                rec_B = G_AB(fake_A)
+                loss_cycle_B = criterion_cycle(rec_B, real_B)
+                loss_cycle = (loss_cycle_A + loss_cycle_B) / 2
+    
+                # Total loss (Weighted)
+                loss_G = loss_GAN + (lambda_cyc * loss_cycle) + (lambda_id* loss_identity)
 
-            # Identity loss
-            loss_id_A = criterion_identity(G_BA(real_A), real_A)
-            loss_id_B = criterion_identity(G_AB(real_B), real_B)
-            loss_identity = (loss_id_A + loss_id_B) / 2
-
-            # GAN loss
-            fake_B = G_AB(real_A)
-            loss_GAN_AB = criterion_GAN(D_B(fake_B), valid)
-            fake_A = G_BA(real_B)
-            loss_GAN_BA = criterion_GAN(D_A(fake_A), valid)
-            loss_GAN = (loss_GAN_AB + loss_GAN_BA) / 2
-
-            # Cycle loss
-            rec_A = G_BA(fake_B)
-            loss_cycle_A = criterion_cycle(rec_A, real_A)
-            rec_B = G_AB(fake_A)
-            loss_cycle_B = criterion_cycle(rec_B, real_B)
-            loss_cycle = (loss_cycle_A + loss_cycle_B) / 2
-
-            # Total loss (Weighted)
-            loss_G = loss_GAN + (lambda_cyc * loss_cycle) + (lambda_id* loss_identity)
-            loss_G.backward()
-            optimizer_G.step()
+           # Scale the gradients (Prevents underflow)
+            scaler.scale(loss_G).backward()
+            scaler.step(optimizer_G)
+            scaler.update()
             loss_G_total += loss_G.item()
             loss_G_GAN += loss_GAN.item()
             loss_G_cyc += loss_cycle.item()
             loss_G_id += loss_identity.item()
-
+            
             # -----------------------
             #  Train Discriminator A
             # -----------------------
+ 
+    
             optimizer_D_A.zero_grad()
-            loss_real = criterion_GAN(D_A(real_A), valid)
-            fake_A_ = fake_A_buffer.push_and_pop(fake_A)
-            loss_fake = criterion_GAN(D_A(fake_A_.detach()), fake)
-            loss_D_A = (loss_real + loss_fake) / 2
-            loss_D_A.backward()
-            optimizer_D_A.step()
+            with torch.amp.autocast(device_type='cuda'):
+                loss_real = criterion_GAN(D_A(real_A), valid)
+                fake_A_ = fake_A_buffer.push_and_pop(fake_A)
+                loss_fake = criterion_GAN(D_A(fake_A_.detach()), fake)
+                loss_D_A = (loss_real + loss_fake) / 2
+            
+            scaler.scale(loss_D_A).backward()
+            scaler.step(optimizer_D_A)
+            scaler.update()
 
             # -----------------------
             #  Train Discriminator B
             # -----------------------
             optimizer_D_B.zero_grad()
-            loss_real = criterion_GAN(D_B(real_B), valid)
-            fake_B_ = fake_B_buffer.push_and_pop(fake_B)
-            loss_fake = criterion_GAN(D_B(fake_B_.detach()), fake)
-            loss_D_B = (loss_real + loss_fake) / 2
-            loss_D_B.backward()
-            optimizer_D_B.step()
+            with torch.amp.autocast(device_type='cuda'):
+            
+                loss_real = criterion_GAN(D_B(real_B), valid)
+                fake_B_ = fake_B_buffer.push_and_pop(fake_B)
+                loss_fake = criterion_GAN(D_B(fake_B_.detach()), fake)
+                loss_D_B = (loss_real + loss_fake) / 2
+            scaler.scale(loss_D_B).backward()
+            scaler.step(optimizer_D_B)
+            scaler.update()
+
+            
             loss_D_total += (loss_D_A.item() + loss_D_B.item())
 
             # --- END OF EPOCH ACTIONS ---
@@ -431,10 +455,10 @@ def train(input_path_A=None, input_path_B=None, epochs=100,save_dir="./",
 if __name__ == "__main__":
     # Replace these with your actual .pt file paths
     # If files don't exist, the script will generate random noise to demonstrate functionality.
-    workdir ="/pscratch/sd/g/giuspugl/workstation/CO_network/extending_CO" 
+    workdir ="/pscratch/sd/g/giuspugl/workstation/CO_network/data/" 
     import glob 
     import re
-    chks = (glob . glob (f"{workdir}/new_experiment/checkpoint_epoch_*" )) 
+    chks = (glob . glob (f"{workdir}/unpaired_training/checkpoint_epoch_*" )) 
     # Regex to extract the epoch number
     def extract_epoch(filename):
         match = re.search(r"checkpoint_epoch_(\d+).pth", filename)
@@ -444,8 +468,10 @@ if __name__ == "__main__":
     latest_chkp  = max(chks, key=extract_epoch)
 
     
-    train(f"{workdir}/fileA.pt", f"{workdir}/fileB.pt", 
-          epochs=96, save_dir = f"{workdir}/new_experiment" ,resume_path=latest_chkp ) 
+    train(f"{workdir}/feature_file_training.pt", f"{workdir}/target_file_training.pt", 
+          epochs=1, mode= 'unpaired',
+          batch_size=32, 
+          save_dir = f"{workdir}/unpaired_training" ,resume_path=latest_chkp ) 
 
     #train(  epochs=1, save_dir = f"{workdir}/new_experiment",
     #      resume_path=f"{workdir}/new_experiment/checkpoint_epoch_1.pth")
