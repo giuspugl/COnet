@@ -1,0 +1,15 @@
+#!/bin/bash
+
+#SBATCH -C gpu 
+#SBATCH -A mp107d_g
+#SBATCH --time=24:00:00
+#SBATCH --nodes 1 
+#SBATCH --gpus 1
+#SBATCH --qos shared    
+#SBATCH --job-name=COnet
+#SBATCH --output=log_gpu_%j.log
+
+module load pytorch 
+date
+srun python CycleGAN1.py 
+date 
